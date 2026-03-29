@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Google NotebookLM 업로드용 동영상 분할 도구. 200MB 제한을 넘는 동영상을 자동으로 분할합니다.">
+    <title>Video Trim - 동영상 분할 도구</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- 배경 애니메이션 -->
+    <div class="bg-animation">
+        <div class="bg-orb bg-orb-1"></div>
+        <div class="bg-orb bg-orb-2"></div>
+        <div class="bg-orb bg-orb-3"></div>
+    </div>
+
+    <div class="app-container">
+        <!-- 헤더 -->
+        <header class="app-header">
+            <div class="logo">
+                <span class="logo-icon">✂️</span>
+                <h1>Video Trim</h1>
+            </div>
+            <p class="subtitle">Google NotebookLM 업로드용 동영상 분할 도구</p>
+        </header>
+
+        <!-- 스텝 인디케이터 -->
+        <div class="step-indicator">
+            <div class="step active" data-step="1">
+                <div class="step-circle">1</div>
+                <span class="step-label">파일 선택</span>
+            </div>
+            <div class="step-line"></div>
+            <div class="step" data-step="2">
+                <div class="step-circle">2</div>
+                <span class="step-label">분할 설정</span>
+            </div>
+            <div class="step-line"></div>
+            <div class="step" data-step="3">
+                <div class="step-circle">3</div>
+                <span class="step-label">완료</span>
+            </div>
+        </div>
+
+        <!-- Step 1: 파일 업로드 -->
+        <section id="step1" class="step-section active">
+            <div class="upload-zone" id="dropZone">
+                <div class="upload-icon">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                </div>
+                <p class="upload-text">동영상 파일을 여기에 드래그 앤 드롭하세요</p>
+                <p class="upload-hint">또는 클릭하여 파일을 선택하세요</p>
+                <p class="upload-formats">지원 형식: MP4, MKV, AVI, MOV, WebM</p>
+                <input type="file" id="fileInput" accept=".mp4,.mkv,.avi,.mov,.webm" hidden>
+            </div>
+
+            <!-- 업로드 진행률 (숨김) -->
+            <div id="uploadProgress" class="progress-container hidden">
+                <div class="progress-header">
+                    <span class="progress-title">📤 파일 업로드 중...</span>
+                    <span class="progress-percent" id="uploadPercent">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="uploadFill"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 2: 분할 설정 -->
+        <section id="step2" class="step-section hidden">
+            <!-- 파일 정보 카드 -->
+            <div class="file-info-card">
+                <div class="file-info-header">
+                    <span class="file-icon">📹</span>
+                    <div>
+                        <h3 id="fileName" class="file-name">-</h3>
+                        <p class="file-meta" id="fileMeta">-</p>
+                    </div>
+                </div>
+                <div class="file-info-grid">
+                    <div class="info-item">
+                        <span class="info-label">파일 크기</span>
+                        <span class="info-value" id="fileSize">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">재생 시간</span>
+                        <span class="info-value" id="fileDuration">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">해상도</span>
+                        <span class="info-value" id="fileResolution">-</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">코덱</span>
+                        <span class="info-value" id="fileCodec">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 분할 설정 -->
+            <div class="settings-card">
+                <h3 class="card-title">⚙️ 분할 설정</h3>
+
+                <!-- 목표 용량 -->
+                <div class="setting-group">
+                    <label class="setting-label">목표 용량 (MB)</label>
+                    <div class="size-input-group">
+                        <input type="range" id="sizeSlider" min="10" max="500" value="200" step="10">
+                        <div class="size-input-wrapper">
+                            <input type="number" id="sizeInput" min="10" max="5000" value="200" step="10">
+                            <span class="size-unit">MB</span>
+                        </div>
+                    </div>
+                    <div class="split-preview">
+                        <span>예상 분할: </span>
+                        <strong id="estimatedParts">-</strong>
+                        <span> 파트</span>
+                    </div>
+                </div>
+
+                <!-- 저장 경로 -->
+                <div class="setting-group">
+                    <label class="setting-label">저장 경로</label>
+                    <div class="path-input-group">
+                        <input type="text" id="outputPath" placeholder="예: D:\NotebookLM_Videos" class="path-input">
+                        <button id="browseBtn" class="btn-secondary btn-small btn-browse" title="폴더 선택 다이얼로그 열기">📁 선택</button>
+                        <button id="validatePathBtn" class="btn-secondary btn-small">확인</button>
+                    </div>
+                    <p class="path-status" id="pathStatus"></p>
+                </div>
+
+                <button id="splitBtn" class="btn-primary btn-large" disabled>
+                    <span class="btn-icon">✂️</span>
+                    분할 시작
+                </button>
+            </div>
+
+            <!-- 스테이터스 바 (분할 진행 중) -->
+            <div id="statusBar" class="status-bar hidden">
+                <div class="status-header">
+                    <span class="status-title" id="statusTitle">📹 분할 중...</span>
+                    <span class="status-percent" id="statusPercent">0%</span>
+                </div>
+                <div class="progress-bar progress-bar-animated">
+                    <div class="progress-fill progress-fill-animated" id="statusFill"></div>
+                </div>
+                <div class="status-details">
+                    <div class="status-detail">
+                        <span class="detail-icon">🔹</span>
+                        <span id="statusPart">준비 중...</span>
+                    </div>
+                    <div class="status-detail">
+                        <span class="detail-icon">⏱️</span>
+                        <span>경과: <strong id="statusElapsed">00:00</strong></span>
+                    </div>
+                    <div class="status-detail">
+                        <span class="detail-icon">⏳</span>
+                        <span>남은 시간: <strong id="statusRemaining">계산 중...</strong></span>
+                    </div>
+                    <div class="status-detail">
+                        <span class="detail-icon">🚀</span>
+                        <span>처리 속도: <strong id="statusSpeed">-</strong></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 3: 결과 -->
+        <section id="step3" class="step-section hidden">
+            <div class="result-header">
+                <div class="result-icon">🎉</div>
+                <h2>분할 완료!</h2>
+                <p class="result-summary" id="resultSummary">-</p>
+            </div>
+
+            <div class="result-path-card">
+                <span class="path-icon">📁</span>
+                <span class="path-text" id="resultPath">-</span>
+                <button id="openFolderBtn" class="btn-secondary btn-small">폴더 열기</button>
+            </div>
+
+            <div class="parts-list" id="partsList">
+                <!-- 동적으로 생성 -->
+            </div>
+
+            <button id="newFileBtn" class="btn-primary btn-large">
+                <span class="btn-icon">🔄</span>
+                새 파일 처리
+            </button>
+        </section>
+    </div>
+
+    <footer class="app-footer">
+        <p>Video Trim v1.0 — Google NotebookLM 업로드용 동영상 분할 도구</p>
+    </footer>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

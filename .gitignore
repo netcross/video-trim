@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# 동영상 파일 (git에 포함하지 않음)
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.wmv
+*.flv
+
+# 업로드/출력 폴더 (런타임 생성)
+uploads/
+output/
+
+# OS 생성 파일
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 기타
+=3.0.0
