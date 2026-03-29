@@ -9,8 +9,8 @@
 
 **Video Trim**은 Google NotebookLM의 200MB 동영상 업로드 제한을 해결하기 위해, 대용량 동영상을 지정된 크기 이하로 자동 분할하는 **로컬 웹 애플리케이션**입니다.
 
-- **현재 버전**: v1.1 (안정)
-- **상태**: ✅ 핵심 기능 구현 완료 + 실제 파일 분할 테스트 통과
+- **현재 버전**: v1.2 (안정)
+- **상태**: ✅ 핵심 기능 구현 완료 + 복수 파일 순차 분할 지원
 - **마지막 작업**: 2026-03-29
 
 ---
@@ -36,6 +36,7 @@
 | 13 | 네이티브 폴더 선택 다이얼로그 (tkinter) | ✅ 완료 | `server.py` `/api/browse-folder`, `script.js` |
 | 14 | 기본 저장 경로 자동 설정 (output 폴더) | ✅ 완료 | `server.py` `/api/default-path`, `script.js` |
 | 15 | 폴링 404 안전 가드 (서버 재시작 대응) | ✅ 완료 | `script.js` |
+| 16 | **복수 파일 순차 분할** (큐 + 자동 순차 처리) | ✅ 완료 | `script.js`, `index.html`, `style.css` |
 
 ### ❌ 미구현 기능 (PRD에 정의됨)
 
@@ -43,7 +44,7 @@
 |---|------|----------|------|
 | 1 | 재인코딩 모드 (정확한 용량 분할) | 낮음 | 처리 시간 크게 증가, 사용자 선택 옵션으로 제공 |
 | 2 | 시간 기준 분할 (예: 30분마다) | 중간 | `calculate_split_points()` 수정 |
-| 3 | 복수 파일 일괄 처리 | 낮음 | 큐 시스템 필요 |
+| ~~3~~ | ~~복수 파일 일괄 처리~~ | ~~완료~~ | ~~v1.2에서 큐 시스템으로 구현~~ |
 | 4 | ZIP 일괄 다운로드 | 낮음 | 사용자 지정 경로 방식이라 불필요할 수 있음 |
 | 5 | macOS/Linux 폴더 열기 | 낮음 | `server.py`에 분기 추가 |
 
@@ -53,13 +54,13 @@
 
 ```
 c:\Workspace\video-trim\
-├── server.py              # [핵심] Flask 백엔드 (589줄, 단일 파일)
+├── server.py              # [핵심] Flask 백엔드 (590줄, 단일 파일)
 ├── requirements.txt       # Python 의존성 (flask>=3.0.0)
 ├── README.md              # GitHub용 설명 문서
 ├── static/
-│   ├── index.html         # 메인 페이지 (207줄)
-│   ├── style.css          # 스타일시트 (977줄, CSS 변수 기반 디자인 시스템)
-│   └── script.js          # 프론트엔드 로직 (589줄)
+│   ├── index.html         # 메인 페이지 (240줄, 복수 파일 큐 UI 포함)
+│   ├── style.css          # 스타일시트 (1300+줄, CSS 변수 기반 디자인 시스템)
+│   └── script.js          # 프론트엔드 로직 (640줄, 순차 분할 큐 포함)
 ├── docs/
 │   ├── PRD.md             # 제품 요구사항 문서 (v1.2)
 │   ├── TDD.md             # 기술 설계 문서 (v1.1)
@@ -110,12 +111,23 @@ python server.py                  # 서버 시작 → http://localhost:5000
 
 ### 5.1 작업 흐름 (Critical Path)
 
+#### 단일 파일:
 ```
 업로드 → tasks{} 등록 → 분할 요청 → 백그라운드 Thread 시작
 → FFmpeg -progress pipe:1 실행 (stderr는 별도 스레드에서 드레인)
 → stdout에서 out_time_us 파싱 → tasks{} 실시간 갱신
 → 프론트엔드 500ms 폴링으로 상태 표시
 → 완료 시 status="completed" → 결과 화면 표시
+```
+
+#### 복수 파일 순차 분할 (v1.2):
+```
+파일 큐 선택 → Step 2 설정 → "분할 시작" 클릭
+→ processNextFile() 호출
+  → 업로드(uploadFile) → 분할 시작(startSplit) → 폴링
+  → 완료 시 onFileCompleted()
+    → 다음 파일이 있으면 → processNextFile() 재귀 호출
+    → 모든 파일 완료 → showAllResults() → Step 3
 ```
 
 ### 5.2 작업 상태 관리
@@ -169,9 +181,10 @@ part_duration = duration / num_parts                   # 균등 분배
 ### 5.6 프론트엔드 상태 전환
 
 ```
-Step 1 (파일 선택) → handleFile() 성공 → Step 2 (분할 설정)
-Step 2 (분할 설정) → startSplit() 성공 → 스테이터스 바 표시
-폴링 완료 → status==="completed" → Step 3 (결과 확인)
+Step 1 (파일 큐 선택) → "분할 설정으로 이동" → Step 2 (설정 입력)
+Step 2 → "분할 시작" → 큐 전체 자동 순차 처리 시작
+  → 각 파일: 업로드 → 분할 → 폴링 → 완료 → 다음
+모든 파일 완료 → showAllResults() → Step 3 (통합 결과)
 "새 파일 처리" 클릭 → 전체 초기화 → Step 1
 ```
 

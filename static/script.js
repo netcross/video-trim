@@ -1,6 +1,6 @@
 /**
  * Video Trim - 프론트엔드 로직
- * 동영상 업로드, 분할 설정, 진행률 추적, 결과 표시
+ * 복수 파일 업로드, 순차 분할, 진행률 추적, 결과 표시
  */
 
 // ============================================================
@@ -8,11 +8,17 @@
 // ============================================================
 const state = {
     taskId: null,          // 현재 작업 ID
-    fileInfo: null,        // 업로드된 파일 정보
+    fileInfo: null,        // 현재 처리 중인 파일 정보
     isPathValid: false,    // 저장 경로 유효 여부
     pollingTimer: null,    // 상태 폴링 타이머
     currentStep: 1,        // 현재 스텝 (1, 2, 3)
     defaultPath: '',       // 기본 저장 경로 (output 폴더)
+
+    // 복수 파일 큐
+    fileQueue: [],         // 대기 중인 File 객체 배열
+    queueIndex: 0,         // 현재 처리 중인 파일 인덱스
+    allResults: [],        // 모든 파일의 분할 결과 배열
+    isProcessingQueue: false, // 큐 처리 중 여부
 };
 
 // ============================================================
@@ -23,8 +29,16 @@ const dom = {
     dropZone: document.getElementById('dropZone'),
     fileInput: document.getElementById('fileInput'),
     uploadProgress: document.getElementById('uploadProgress'),
+    uploadTitle: document.getElementById('uploadTitle'),
     uploadPercent: document.getElementById('uploadPercent'),
     uploadFill: document.getElementById('uploadFill'),
+
+    // 파일 큐
+    fileQueue: document.getElementById('fileQueue'),
+    fileQueueCount: document.getElementById('fileQueueCount'),
+    fileQueueList: document.getElementById('fileQueueList'),
+    clearQueueBtn: document.getElementById('clearQueueBtn'),
+    startQueueBtn: document.getElementById('startQueueBtn'),
 
     // Step 2
     fileName: document.getElementById('fileName'),
@@ -51,6 +65,13 @@ const dom = {
     statusElapsed: document.getElementById('statusElapsed'),
     statusRemaining: document.getElementById('statusRemaining'),
     statusSpeed: document.getElementById('statusSpeed'),
+
+    // 큐 진행
+    queueProgress: document.getElementById('queueProgress'),
+    queueCurrent: document.getElementById('queueCurrent'),
+    queueTotal: document.getElementById('queueTotal'),
+    queueFill: document.getElementById('queueFill'),
+    queueFileName: document.getElementById('queueFileName'),
 
     // Step 3
     resultSummary: document.getElementById('resultSummary'),
@@ -148,8 +169,14 @@ function goToStep(stepNum) {
 }
 
 // ============================================================
-// Step 1: 파일 업로드
+// Step 1: 파일 선택 (복수 파일 큐)
 // ============================================================
+
+// 허용 확장자 체크
+function isAllowedFile(file) {
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    return ['.mp4', '.mkv', '.avi', '.mov', '.webm'].includes(ext);
+}
 
 // 드래그 앤 드롭 이벤트
 dom.dropZone.addEventListener('dragover', (e) => {
@@ -164,8 +191,8 @@ dom.dropZone.addEventListener('dragleave', () => {
 dom.dropZone.addEventListener('drop', (e) => {
     e.preventDefault();
     dom.dropZone.classList.remove('dragover');
-    const files = e.dataTransfer.files;
-    if (files.length > 0) handleFile(files[0]);
+    const files = Array.from(e.dataTransfer.files).filter(isAllowedFile);
+    if (files.length > 0) addFilesToQueue(files);
 });
 
 // 클릭으로 파일 선택
@@ -174,77 +201,163 @@ dom.dropZone.addEventListener('click', () => {
 });
 
 dom.fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) {
-        handleFile(e.target.files[0]);
-    }
+    const files = Array.from(e.target.files).filter(isAllowedFile);
+    if (files.length > 0) addFilesToQueue(files);
+    dom.fileInput.value = ''; // 동일 파일 재선택 가능하도록 리셋
 });
 
 /**
- * 파일 업로드 처리
+ * 파일 큐에 추가
  */
-async function handleFile(file) {
-    // 확장자 확인
-    const ext = '.' + file.name.split('.').pop().toLowerCase();
-    const allowed = ['.mp4', '.mkv', '.avi', '.mov', '.webm'];
-    if (!allowed.includes(ext)) {
-        showToast(`지원하지 않는 형식: ${ext}. 지원 형식: ${allowed.join(', ')}`);
+function addFilesToQueue(files) {
+    for (const file of files) {
+        // 이미 큐에 같은 이름+크기의 파일이 있으면 건너뛰기
+        const isDuplicate = state.fileQueue.some(
+            f => f.name === file.name && f.size === file.size
+        );
+        if (!isDuplicate) {
+            state.fileQueue.push(file);
+        }
+    }
+    renderFileQueue();
+}
+
+/**
+ * 파일 큐 UI 렌더링
+ */
+function renderFileQueue() {
+    const count = state.fileQueue.length;
+    dom.fileQueueCount.textContent = count;
+
+    if (count === 0) {
+        dom.fileQueue.classList.add('hidden');
         return;
     }
 
-    // 업로드 프로그레스 표시
-    dom.uploadProgress.classList.remove('hidden');
-    dom.uploadPercent.textContent = '0%';
-    dom.uploadFill.style.width = '0%';
+    dom.fileQueue.classList.remove('hidden');
+    dom.fileQueueList.innerHTML = '';
 
-    const formData = new FormData();
-    formData.append('file', file);
+    // 전체 큐 용량 합산
+    const totalSize = state.fileQueue.reduce((sum, f) => sum + f.size, 0);
 
-    try {
-        const xhr = new XMLHttpRequest();
+    state.fileQueue.forEach((file, index) => {
+        const item = document.createElement('div');
+        item.className = 'file-queue-item';
+        item.innerHTML = `
+            <span class="queue-file-icon">📹</span>
+            <span class="queue-file-name">${file.name}</span>
+            <span class="queue-file-size">${formatSize(file.size)}</span>
+            <button class="queue-remove-btn" data-index="${index}" title="제거">✕</button>
+        `;
+        dom.fileQueueList.appendChild(item);
+    });
 
-        // 업로드 진행률 추적
-        xhr.upload.addEventListener('progress', (e) => {
-            if (e.lengthComputable) {
-                const percent = Math.round((e.loaded / e.total) * 100);
-                dom.uploadPercent.textContent = `${percent}%`;
-                dom.uploadFill.style.width = `${percent}%`;
-            }
-        });
-
-        // 응답 처리
-        const response = await new Promise((resolve, reject) => {
-            xhr.addEventListener('load', () => {
-                if (xhr.status === 200) {
-                    resolve(JSON.parse(xhr.responseText));
-                } else {
-                    const data = JSON.parse(xhr.responseText);
-                    reject(new Error(data.error || '업로드 실패'));
-                }
-            });
-            xhr.addEventListener('error', () => reject(new Error('네트워크 오류')));
-            xhr.open('POST', '/api/upload');
-            xhr.send(formData);
-        });
-
-        // 성공
-        state.taskId = response.task_id;
-        state.fileInfo = response;
-
-        // Step 2로 이동
-        populateFileInfo(response);
-        goToStep(2);
-        updateEstimatedParts();
-
-        // 기본 경로가 설정되어 있으면 자동 검증
-        if (dom.outputPath.value && !state.isPathValid) {
-            validatePath();
-        }
-
-    } catch (error) {
-        showToast(error.message);
-    } finally {
-        dom.uploadProgress.classList.add('hidden');
+    // 큐 하단 요약 표시 업데이트
+    const summaryEl = document.getElementById('queueSummary');
+    if (summaryEl) {
+        summaryEl.textContent = `총 ${count}개 파일 • ${formatSize(totalSize)}`;
     }
+
+    // 삭제 버튼 이벤트
+    dom.fileQueueList.querySelectorAll('.queue-remove-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const idx = parseInt(btn.dataset.index);
+            state.fileQueue.splice(idx, 1);
+            renderFileQueue();
+        });
+    });
+}
+
+// 전체 삭제 버튼
+dom.clearQueueBtn.addEventListener('click', () => {
+    state.fileQueue = [];
+    renderFileQueue();
+});
+
+// 분할 설정으로 이동 버튼 — 업로드 없이 Step 2로 이동
+dom.startQueueBtn.addEventListener('click', () => {
+    if (state.fileQueue.length === 0) return;
+
+    // Step 2로 이동 (업로드 없이 설정만 표시)
+    showQueueSettingsView();
+    goToStep(2);
+});
+
+/**
+ * 복수 파일 큐의 설정 화면 표시 (업로드 전)
+ */
+function showQueueSettingsView() {
+    const count = state.fileQueue.length;
+    const totalSize = state.fileQueue.reduce((sum, f) => sum + f.size, 0);
+
+    // 파일 정보 카드에 큐 요약 표시
+    dom.fileName.textContent = count === 1
+        ? state.fileQueue[0].name
+        : `${count}개 파일 일괄 분할`;
+    dom.fileMeta.textContent = count === 1
+        ? '파일 크기 분석 중... (분할 시작 시 업로드됩니다)'
+        : `총 ${formatSize(totalSize)} • 순차적으로 업로드 & 분할됩니다`;
+
+    // 복수 파일인 경우 대표 정보 표시
+    dom.fileSize.textContent = formatSize(totalSize);
+    dom.fileDuration.textContent = '-';
+    dom.fileResolution.textContent = '-';
+    dom.fileCodec.textContent = '-';
+
+    // 큐 파일 리스트를 Step 2에도 표시
+    updateStep2FileList();
+
+    // 예상 파트 수 — 단일 파일이면 대략 계산, 복수면 '업로드 후 확인'
+    if (count === 1) {
+        const targetMB = parseInt(dom.sizeInput.value) || 200;
+        const targetBytes = targetMB * 1024 * 1024;
+        const parts = Math.ceil(state.fileQueue[0].size / targetBytes);
+        dom.estimatedParts.textContent = `약 ${parts}`;
+    } else {
+        const targetMB = parseInt(dom.sizeInput.value) || 200;
+        const targetBytes = targetMB * 1024 * 1024;
+        let totalParts = 0;
+        state.fileQueue.forEach(f => {
+            totalParts += Math.ceil(f.size / targetBytes);
+        });
+        dom.estimatedParts.textContent = `약 ${totalParts} (${count}개 파일)`;
+    }
+
+    // 기본 경로 설정 및 검증
+    if (dom.outputPath.value && !state.isPathValid) {
+        validatePath();
+    }
+}
+
+/**
+ * Step 2에 파일 큐 리스트를 표시
+ */
+function updateStep2FileList() {
+    const container = document.getElementById('step2FileList');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    if (state.fileQueue.length <= 1) {
+        container.classList.add('hidden');
+        return;
+    }
+
+    container.classList.remove('hidden');
+
+    state.fileQueue.forEach((file, index) => {
+        const item = document.createElement('div');
+        item.className = 'step2-file-item';
+        item.setAttribute('data-queue-index', index);
+        item.innerHTML = `
+            <span class="step2-file-num">${index + 1}</span>
+            <span class="step2-file-name">${file.name}</span>
+            <span class="step2-file-size">${formatSize(file.size)}</span>
+            <span class="step2-file-status" id="step2FileStatus_${index}">⏳ 대기</span>
+        `;
+        container.appendChild(item);
+    });
 }
 
 // ============================================================
@@ -252,11 +365,14 @@ async function handleFile(file) {
 // ============================================================
 
 /**
- * 파일 정보를 UI에 표시
+ * 파일 정보를 UI에 표시 (업로드 후 실제 정보로 업데이트)
  */
 function populateFileInfo(info) {
     dom.fileName.textContent = info.filename;
-    dom.fileMeta.textContent = `업로드 완료 • Task ID: ${info.task_id}`;
+    const queueText = state.fileQueue.length > 1
+        ? `파일 ${state.queueIndex + 1}/${state.fileQueue.length}`
+        : `Task ID: ${info.task_id}`;
+    dom.fileMeta.textContent = `업로드 완료 • ${queueText}`;
     dom.fileSize.textContent = formatSize(info.file_size);
     dom.fileDuration.textContent = formatDuration(info.duration);
     dom.fileResolution.textContent = info.resolution;
@@ -267,12 +383,26 @@ function populateFileInfo(info) {
  * 예상 분할 파트 수 계산 및 표시
  */
 function updateEstimatedParts() {
-    if (!state.fileInfo) return;
     const targetMB = parseInt(dom.sizeInput.value) || 200;
     const targetBytes = targetMB * 1024 * 1024;
-    // 파트 수 = 파일 크기 / 목표 용량 (올림)
-    const parts = Math.ceil(state.fileInfo.file_size / targetBytes);
-    dom.estimatedParts.textContent = parts;
+
+    if (state.fileInfo) {
+        // 업로드 후 실제 정보가 있으면 정확한 파트 수 표시
+        const parts = Math.ceil(state.fileInfo.file_size / targetBytes);
+        dom.estimatedParts.textContent = parts;
+    } else if (state.fileQueue.length > 0) {
+        // 업로드 전이면 파일 크기로 대략 계산
+        if (state.fileQueue.length === 1) {
+            const parts = Math.ceil(state.fileQueue[0].size / targetBytes);
+            dom.estimatedParts.textContent = `약 ${parts}`;
+        } else {
+            let totalParts = 0;
+            state.fileQueue.forEach(f => {
+                totalParts += Math.ceil(f.size / targetBytes);
+            });
+            dom.estimatedParts.textContent = `약 ${totalParts} (${state.fileQueue.length}개 파일)`;
+        }
+    }
 }
 
 // 슬라이더 ↔ 숫자 입력 동기화
@@ -373,19 +503,115 @@ dom.outputPath.addEventListener('input', () => {
     updateSplitButton();
 });
 
-// 분할 시작
-dom.splitBtn.addEventListener('click', startSplit);
+// ============================================================
+// 분할 시작: 큐 전체를 순차적으로 업로드 + 분할
+// ============================================================
+dom.splitBtn.addEventListener('click', startQueueProcessing);
 
-async function startSplit() {
-    if (!state.taskId || !state.isPathValid) return;
+/**
+ * 큐 전체 처리 시작 (핵심 함수!)
+ * 1. 설정값(용량, 경로) 확정
+ * 2. 각 파일에 대해: 업로드 → 분할 → 완료 대기 → 다음 파일
+ */
+async function startQueueProcessing() {
+    if (!state.isPathValid || state.fileQueue.length === 0) return;
 
-    const targetMB = parseInt(dom.sizeInput.value) || 200;
-    const outputDir = dom.outputPath.value.trim();
+    state.isProcessingQueue = true;
+    state.queueIndex = 0;
+    state.allResults = [];
 
+    // 분할 버튼 비활성화
     dom.splitBtn.disabled = true;
-    dom.splitBtn.innerHTML = '<span class="btn-icon">⏳</span> 처리 시작 중...';
+    dom.splitBtn.innerHTML = '<span class="btn-icon">⏳</span> 처리 중...';
 
+    // 복수 파일인 경우 큐 진행 표시
+    if (state.fileQueue.length > 1) {
+        dom.queueProgress.classList.remove('hidden');
+        dom.queueTotal.textContent = state.fileQueue.length;
+        dom.queueCurrent.textContent = '0';
+        dom.queueFill.style.width = '0%';
+        if (dom.queueFileName) {
+            dom.queueFileName.textContent = state.fileQueue[0].name;
+        }
+    }
+
+    // 첫 번째 파일부터 처리 시작
+    await processNextFile();
+}
+
+/**
+ * 다음 파일 처리 (업로드 + 분할)
+ */
+async function processNextFile() {
+    const queueIndex = state.queueIndex;
+    const file = state.fileQueue[queueIndex];
+    if (!file) {
+        // 모든 파일 처리 완료
+        state.isProcessingQueue = false;
+        showAllResults();
+        return;
+    }
+
+    // 큐 진행 UI 업데이트
+    if (state.fileQueue.length > 1) {
+        dom.queueCurrent.textContent = state.allResults.length;
+        dom.queueFill.style.width = `${(state.allResults.length / state.fileQueue.length) * 100}%`;
+        if (dom.queueFileName) {
+            dom.queueFileName.textContent = file.name;
+        }
+    }
+
+    // Step 2 파일 리스트에서 현재 파일 하이라이트
+    updateStep2FileListStatus(queueIndex, 'processing');
+
+    // 1단계: 업로드
     try {
+        dom.uploadProgress.classList.remove('hidden');
+        dom.uploadTitle.textContent = state.fileQueue.length > 1
+            ? `📤 파일 업로드 중... (${queueIndex + 1}/${state.fileQueue.length})`
+            : '📤 파일 업로드 중...';
+        dom.uploadPercent.textContent = '0%';
+        dom.uploadFill.style.width = '0%';
+
+        const uploadResult = await uploadFile(file);
+
+        // 업로드 진행률 숨김
+        dom.uploadProgress.classList.add('hidden');
+
+        // 상태 갱신
+        state.taskId = uploadResult.task_id;
+        state.fileInfo = uploadResult;
+
+        // 파일 정보 UI 업데이트
+        populateFileInfo(uploadResult);
+        updateEstimatedParts();
+
+    } catch (error) {
+        dom.uploadProgress.classList.add('hidden');
+        showToast(`파일 업로드 실패: ${error.message}`);
+        updateStep2FileListStatus(queueIndex, 'error');
+
+        // 실패한 파일 건너뛰고 다음 파일 시도
+        state.queueIndex++;
+        if (state.queueIndex < state.fileQueue.length) {
+            await processNextFile();
+        } else {
+            state.isProcessingQueue = false;
+            if (state.allResults.length > 0) {
+                showAllResults();
+            } else {
+                dom.splitBtn.disabled = false;
+                dom.splitBtn.innerHTML = '<span class="btn-icon">✂️</span> 분할 시작';
+            }
+        }
+        return;
+    }
+
+    // 2단계: 분할 시작
+    try {
+        const targetMB = parseInt(dom.sizeInput.value) || 200;
+        const outputDir = dom.outputPath.value.trim();
+
         const res = await fetch('/api/split', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -397,7 +623,6 @@ async function startSplit() {
         });
 
         const data = await res.json();
-
         if (!res.ok) {
             throw new Error(data.error || '분할 시작 실패');
         }
@@ -406,13 +631,106 @@ async function startSplit() {
         dom.statusBar.classList.remove('hidden');
         dom.statusTitle.textContent = `📹 ${state.fileInfo.filename} 분할 중...`;
 
-        // 폴링 시작
+        // 진행률 리셋
+        dom.statusFill.style.width = '0%';
+        dom.statusPercent.textContent = '0%';
+        dom.statusPart.textContent = '준비 중...';
+        dom.statusElapsed.textContent = '00:00';
+        dom.statusRemaining.textContent = '계산 중...';
+        dom.statusSpeed.textContent = '-';
+
+        // 폴링 시작 — 완료 시 onFileCompleted가 호출됨
         startPolling();
 
     } catch (error) {
-        showToast(error.message);
-        dom.splitBtn.disabled = false;
-        dom.splitBtn.innerHTML = '<span class="btn-icon">✂️</span> 분할 시작';
+        showToast(`분할 시작 실패: ${error.message}`);
+        updateStep2FileListStatus(queueIndex, 'error');
+
+        // 실패한 파일 건너뛰고 다음 파일 시도
+        state.queueIndex++;
+        if (state.queueIndex < state.fileQueue.length) {
+            await processNextFile();
+        } else {
+            state.isProcessingQueue = false;
+            if (state.allResults.length > 0) {
+                showAllResults();
+            } else {
+                dom.splitBtn.disabled = false;
+                dom.splitBtn.innerHTML = '<span class="btn-icon">✂️</span> 분할 시작';
+            }
+        }
+    }
+}
+
+/**
+ * 파일 업로드 (Promise 반환)
+ */
+function uploadFile(file) {
+    return new Promise((resolve, reject) => {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const xhr = new XMLHttpRequest();
+
+        // 업로드 진행률 추적
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                dom.uploadPercent.textContent = `${percent}%`;
+                dom.uploadFill.style.width = `${percent}%`;
+            }
+        });
+
+        xhr.addEventListener('load', () => {
+            if (xhr.status === 200) {
+                resolve(JSON.parse(xhr.responseText));
+            } else {
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    reject(new Error(data.error || '업로드 실패'));
+                } catch {
+                    reject(new Error('업로드 실패'));
+                }
+            }
+        });
+
+        xhr.addEventListener('error', () => reject(new Error('네트워크 오류')));
+        xhr.open('POST', '/api/upload');
+        xhr.send(formData);
+    });
+}
+
+/**
+ * Step 2 파일 리스트 상태 업데이트
+ */
+function updateStep2FileListStatus(index, status) {
+    const statusEl = document.getElementById(`step2FileStatus_${index}`);
+    if (!statusEl) return;
+
+    const item = statusEl.closest('.step2-file-item');
+
+    switch (status) {
+        case 'processing':
+            statusEl.textContent = '🔄 처리 중';
+            statusEl.className = 'step2-file-status processing';
+            if (item) item.classList.add('processing');
+            break;
+        case 'completed':
+            statusEl.textContent = '✅ 완료';
+            statusEl.className = 'step2-file-status completed';
+            if (item) {
+                item.classList.remove('processing');
+                item.classList.add('completed');
+            }
+            break;
+        case 'error':
+            statusEl.textContent = '❌ 실패';
+            statusEl.className = 'step2-file-status error';
+            if (item) {
+                item.classList.remove('processing');
+                item.classList.add('error');
+            }
+            break;
     }
 }
 
@@ -445,6 +763,7 @@ async function pollStatus() {
             dom.splitBtn.disabled = false;
             dom.splitBtn.innerHTML = '<span class="btn-icon">✂️</span> 분할 시작';
             dom.statusBar.classList.add('hidden');
+            state.isProcessingQueue = false;
             return;
         }
 
@@ -456,16 +775,71 @@ async function pollStatus() {
         // 완료 또는 에러 시 폴링 중지
         if (data.status === 'completed') {
             stopPolling();
-            showResults(data);
+            onFileCompleted(data);
         } else if (data.status === 'error') {
             stopPolling();
             showToast(data.message || '분할 중 오류가 발생했습니다.');
-            dom.splitBtn.disabled = false;
-            dom.splitBtn.innerHTML = '<span class="btn-icon">✂️</span> 분할 시작';
-            dom.statusBar.classList.add('hidden');
+            updateStep2FileListStatus(state.queueIndex, 'error');
+
+            // 에러 발생해도 다음 파일 처리 시도 (큐 모드일 때)
+            if (state.isProcessingQueue && state.queueIndex + 1 < state.fileQueue.length) {
+                dom.statusBar.classList.add('hidden');
+                state.queueIndex++;
+                await processNextFile();
+            } else {
+                dom.splitBtn.disabled = false;
+                dom.splitBtn.innerHTML = '<span class="btn-icon">✂️</span> 분할 시작';
+                dom.statusBar.classList.add('hidden');
+                state.isProcessingQueue = false;
+                if (state.allResults.length > 0) {
+                    showAllResults();
+                }
+            }
         }
     } catch (error) {
         console.error('폴링 오류:', error);
+    }
+}
+
+/**
+ * 파일 분할 완료 시 처리 (큐의 다음 파일로 이동하거나 최종 결과 표시)
+ */
+async function onFileCompleted(data) {
+    // 현재 파일 결과 저장
+    state.allResults.push({
+        filename: state.fileInfo.filename,
+        parts: data.parts || [],
+        output_dir: data.output_dir || '',
+        elapsed_seconds: data.elapsed_seconds || 0,
+    });
+
+    // Step 2 파일 리스트 상태 업데이트
+    updateStep2FileListStatus(state.queueIndex, 'completed');
+
+    // 큐 진행 갱신
+    if (state.fileQueue.length > 1) {
+        dom.queueCurrent.textContent = state.allResults.length;
+        dom.queueFill.style.width = `${(state.allResults.length / state.fileQueue.length) * 100}%`;
+    }
+
+    // 임시 파일 정리
+    try {
+        await fetch(`/api/cleanup/${state.taskId}`, { method: 'DELETE' });
+    } catch (e) { /* 무시 */ }
+
+    // 다음 파일로 이동
+    state.queueIndex++;
+
+    if (state.queueIndex < state.fileQueue.length) {
+        // 스테이터스 바 리셋
+        dom.statusBar.classList.add('hidden');
+
+        // 다음 파일 처리
+        await processNextFile();
+    } else {
+        // 모든 파일 처리 완료!
+        state.isProcessingQueue = false;
+        showAllResults();
     }
 }
 
@@ -498,30 +872,51 @@ function updateStatusBar(data) {
 // Step 3: 결과 표시
 // ============================================================
 
-function showResults(data) {
-    const parts = data.parts || [];
-    const totalSize = parts.reduce((sum, p) => sum + p.file_size, 0);
+/**
+ * 모든 파일의 결과를 통합하여 표시
+ */
+function showAllResults() {
+    const allParts = state.allResults.flatMap(r => r.parts);
+    const totalSize = allParts.reduce((sum, p) => sum + p.file_size, 0);
+    const totalElapsed = state.allResults.reduce((sum, r) => sum + r.elapsed_seconds, 0);
+    const fileCount = state.allResults.length;
 
-    dom.resultSummary.textContent =
-        `${parts.length}개 파트 • 총 ${formatSize(totalSize)} • 소요 시간: ${formatDuration(data.elapsed_seconds || 0)}`;
+    if (fileCount > 1) {
+        dom.resultSummary.textContent =
+            `${fileCount}개 파일 → ${allParts.length}개 파트 • 총 ${formatSize(totalSize)} • 소요 시간: ${formatDuration(totalElapsed)}`;
+    } else {
+        dom.resultSummary.textContent =
+            `${allParts.length}개 파트 • 총 ${formatSize(totalSize)} • 소요 시간: ${formatDuration(totalElapsed)}`;
+    }
 
-    dom.resultPath.textContent = data.output_dir || '';
+    dom.resultPath.textContent = state.allResults[0]?.output_dir || '';
 
     // 파트 리스트 생성
     dom.partsList.innerHTML = '';
-    parts.forEach((part, index) => {
-        const card = document.createElement('div');
-        card.className = 'part-card';
-        card.style.animationDelay = `${index * 0.08}s`;
-        card.innerHTML = `
-            <div class="part-number">${part.part_number}</div>
-            <div class="part-info">
-                <div class="part-name">${part.filename}</div>
-                <div class="part-meta">${part.start_time} ~ ${part.end_time} (${formatDuration(part.duration)})</div>
-            </div>
-            <div class="part-size">${formatSize(part.file_size)}</div>
-        `;
-        dom.partsList.appendChild(card);
+
+    state.allResults.forEach((result, fileIdx) => {
+        // 복수 파일인 경우 파일 구분 헤더 추가
+        if (fileCount > 1) {
+            const header = document.createElement('div');
+            header.className = 'result-file-header';
+            header.innerHTML = `<span class="result-file-icon">📹</span> ${result.filename}`;
+            dom.partsList.appendChild(header);
+        }
+
+        result.parts.forEach((part, index) => {
+            const card = document.createElement('div');
+            card.className = 'part-card';
+            card.style.animationDelay = `${(fileIdx * result.parts.length + index) * 0.06}s`;
+            card.innerHTML = `
+                <div class="part-number">${part.part_number}</div>
+                <div class="part-info">
+                    <div class="part-name">${part.filename}</div>
+                    <div class="part-meta">${part.start_time} ~ ${part.end_time} (${formatDuration(part.duration)})</div>
+                </div>
+                <div class="part-size">${formatSize(part.file_size)}</div>
+            `;
+            dom.partsList.appendChild(card);
+        });
     });
 
     goToStep(3);
@@ -549,6 +944,10 @@ dom.newFileBtn.addEventListener('click', () => {
     state.taskId = null;
     state.fileInfo = null;
     state.isPathValid = false;
+    state.fileQueue = [];
+    state.queueIndex = 0;
+    state.allResults = [];
+    state.isProcessingQueue = false;
 
     // UI 초기화
     dom.fileInput.value = '';
@@ -560,7 +959,18 @@ dom.newFileBtn.addEventListener('click', () => {
     dom.splitBtn.disabled = true;
     dom.splitBtn.innerHTML = '<span class="btn-icon">✂️</span> 분할 시작';
     dom.statusBar.classList.add('hidden');
+    dom.queueProgress.classList.add('hidden');
     dom.partsList.innerHTML = '';
+    dom.fileQueue.classList.add('hidden');
+    dom.fileQueueList.innerHTML = '';
+    dom.uploadProgress.classList.add('hidden');
+
+    // Step 2 파일 리스트 초기화
+    const step2FileList = document.getElementById('step2FileList');
+    if (step2FileList) {
+        step2FileList.innerHTML = '';
+        step2FileList.classList.add('hidden');
+    }
 
     // 기본 저장 경로로 리셋
     dom.outputPath.value = state.defaultPath;

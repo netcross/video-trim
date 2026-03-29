@@ -56,16 +56,32 @@
                         <line x1="12" y1="3" x2="12" y2="15"/>
                     </svg>
                 </div>
-                <p class="upload-text">동영상 파일을 여기에 드래그 앤 드롭하세요</p>
-                <p class="upload-hint">또는 클릭하여 파일을 선택하세요</p>
+                <p class="upload-text">동영상 파일을 드래그 앤 드롭하세요</p>
+                <p class="upload-hint">또는 클릭하여 파일 선택 (복수 선택 가능, 순차 분할 지원!)</p>
                 <p class="upload-formats">지원 형식: MP4, MKV, AVI, MOV, WebM</p>
-                <input type="file" id="fileInput" accept=".mp4,.mkv,.avi,.mov,.webm" hidden>
+                <input type="file" id="fileInput" accept=".mp4,.mkv,.avi,.mov,.webm" multiple hidden>
+            </div>
+
+            <!-- 파일 큐 리스트 -->
+            <div id="fileQueue" class="file-queue hidden">
+                <div class="file-queue-header">
+                    <h3>📋 선택된 파일 (<span id="fileQueueCount">0</span>개)</h3>
+                    <button id="clearQueueBtn" class="btn-secondary btn-small">전체 삭제</button>
+                </div>
+                <div id="fileQueueList" class="file-queue-list">
+                    <!-- 동적으로 생성 -->
+                </div>
+                <p class="queue-summary" id="queueSummary"></p>
+                <button id="startQueueBtn" class="btn-primary btn-large">
+                    <span class="btn-icon">▶️</span>
+                    분할 설정으로 이동
+                </button>
             </div>
 
             <!-- 업로드 진행률 (숨김) -->
             <div id="uploadProgress" class="progress-container hidden">
                 <div class="progress-header">
-                    <span class="progress-title">📤 파일 업로드 중...</span>
+                    <span class="progress-title" id="uploadTitle">📤 파일 업로드 중...</span>
                     <span class="progress-percent" id="uploadPercent">0%</span>
                 </div>
                 <div class="progress-bar">
@@ -103,6 +119,11 @@
                         <span class="info-value" id="fileCodec">-</span>
                     </div>
                 </div>
+            </div>
+
+            <!-- 복수 파일 큐 리스트 (Step 2에서 순차 처리 상태 표시) -->
+            <div id="step2FileList" class="step2-file-list hidden">
+                <!-- 동적으로 생성 -->
             </div>
 
             <!-- 분할 설정 -->
@@ -171,6 +192,21 @@
                     </div>
                 </div>
             </div>
+
+            <!-- 복수 파일 전체 진행 표시 -->
+            <div id="queueProgress" class="queue-progress hidden">
+                <div class="queue-progress-text">
+                    <span>📋 전체 진행:</span>
+                    <strong><span id="queueCurrent">0</span> / <span id="queueTotal">0</span> 파일 완료</strong>
+                </div>
+                <div class="queue-current-file">
+                    <span class="detail-icon">📂</span>
+                    <span>현재: <strong id="queueFileName">-</strong></span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="queueFill" style="background: var(--accent-cyan);"></div>
+                </div>
+            </div>
         </section>
 
         <!-- Step 3: 결과 -->
@@ -199,7 +235,7 @@
     </div>
 
     <footer class="app-footer">
-        <p>Video Trim v1.0 — Google NotebookLM 업로드용 동영상 분할 도구</p>
+        <p>Video Trim v1.2 — Google NotebookLM 업로드용 동영상 분할 도구</p>
     </footer>
 
     <script src="/static/script.js"></script>
